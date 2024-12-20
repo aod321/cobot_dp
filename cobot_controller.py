@@ -8,6 +8,7 @@ from gripper_controller import GripperController
 class RobotController:
     def __init__(self, ip="192.168.40.102", port=8080,
                  gripper_ip="192.168.40.102", gripper_port=8000,
+                 speed_upbound=5,
                  home_expand_joint=-90, home_joint1_6=[-15.805, 1.628, -104.147, 6.648, -70.063, 20.478]):
         """Initialize robot controller with IP and port"""
         self.ip = ip
@@ -16,6 +17,7 @@ class RobotController:
         self.home_expand_joint = home_expand_joint
         self.home_joint1_6 = home_joint1_6
         self.gripper = GripperController(base_url=f"http://{gripper_ip}:{gripper_port}")
+        self.speed_upbound = speed_upbound
     
     def connect(self):
         """Connect to the robot"""
@@ -109,7 +111,7 @@ class RobotController:
             print("ERROR: speed must be between 1 and 100")
             return False
             
-        speed = 5 if speed >= 5 else speed
+        speed = self.speed_upbound if speed >= self.speed_upbound else speed
         
         # Convert to protocol units (0.001 degrees)
         pos_units = int(target_pos * 1000)
@@ -121,6 +123,48 @@ class RobotController:
         }
         
         return self._execute_expand_movement(expand_command)
+    
+    def moveL(self, target_pose, speed=5, in_trajectory=False):
+        """
+        Move robot end effector in a straight line to target pose
+        Args: 
+            target_pose: List of [x, y, z, rx, ry, rz] where:
+                x,y,z: Target position in meters 
+                rx,ry,rz: Target orientation in radians
+            speed: Movement speed (1-100)
+        Returns:
+            bool: True if movement successful, False otherwise
+        """
+        if not 1 <= speed <= 100:
+            print("ERROR: speed must be between 1 and 100")
+            return False
+        
+        speed = self.speed_upbound if speed >= self.speed_upbound else speed
+        
+        # Convert to protocol units (0.001 mm for position, 0.001 rad for orientation)
+        pose_units = []
+        # Position conversion from meters to millimeters (*1000) then to protocol units (*1000)
+        for i in range(3):
+            pose_units.append(int(target_pose[i] * 1000000))
+        # Orientation conversion from radians to protocol units (*1000) 
+        for i in range(3,6):
+            pose_units.append(int(target_pose[i] * 1000))
+
+        movel_command = {
+            "command": "movel",
+            "pose": pose_units,
+            "v": speed,
+            "r": 0,
+            "trajectory_connect": 1 if in_trajectory else 0
+        }
+        
+        response = self.send_command(json.dumps(movel_command))
+        if response and response.get("receive_state"):
+            print(f"INFO: Successfully commanded move to target pose")
+            return True
+            
+        print("ERROR: Failed to send movement command") 
+        return False
 
     def move_joints(self, joint_angles, speed=5):
         """
@@ -139,7 +183,7 @@ class RobotController:
             print("ERROR: speed must be between 1 and 100")
             return False
         
-        speed = 5 if speed >= 5 else speed
+        speed = self.speed_upbound if speed >= self.speed_upbound else speed
 
         print(f"INFO: Moving joints to angles: {joint_angles} at speed {speed}")
         
@@ -259,8 +303,8 @@ class RobotController:
     
     def go_home_pos(self):
         """Move to home position"""
-        self.move_expand_axis(self.home_expand_joint, speed=5)
-        self.move_joints(self.home_joint1_6, speed=5)
+        self.move_expand_axis(self.home_expand_joint, speed=self.speed_upbound)
+        self.move_joints(self.home_joint1_6, speed=self.speed_upbound)
 # %%
 if __name__ == "__main__":
     robot = RobotController()

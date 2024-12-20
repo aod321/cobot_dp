@@ -8,7 +8,7 @@ from typing import Any, TYPE_CHECKING, Generic, Optional, Tuple, TypeVar, Union
 
 import numpy as np
 import numpy.typing as npt
-from diffusion_policy.common.nested_dict_util import (nested_dict_check, nested_dict_map)
+from nested_dict_util import (nested_dict_check, nested_dict_map)
 
 
 SharedMemoryLike = Union[str, SharedMemory]  # shared memory or name of shared memory
