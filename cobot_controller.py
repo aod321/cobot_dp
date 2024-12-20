@@ -4,6 +4,7 @@ import json
 import time
 import select
 from gripper_controller import GripperController
+from rm_65_model import RM65
 
 class RobotController:
     def __init__(self, ip="192.168.40.102", port=8080,
@@ -18,6 +19,7 @@ class RobotController:
         self.home_joint1_6 = home_joint1_6
         self.gripper = GripperController(base_url=f"http://{gripper_ip}:{gripper_port}")
         self.speed_upbound = speed_upbound
+        self.ik_model = RM65()
     
     def connect(self):
         """Connect to the robot"""
@@ -29,12 +31,26 @@ class RobotController:
         except Exception as e:
             print(f"ERROR: Failed to connect: {e}")
             return False
-    
+
     def disconnect(self):
-        """Disconnect from robot"""
-        if self.socket:
-            self.socket.close()
-            self.socket = None
+        """Disconnect safely from robot"""
+        try:
+            # First stop any ongoing movement
+            stop_command = {"command": "set_arm_stop"}
+            self.send_command(json.dumps(stop_command))
+            
+            # Close socket if it exists
+            if self.socket:
+                self.socket.close()
+                self.socket = None
+                print("INFO: Successfully disconnected from robot")
+                return True
+                
+        except Exception as e:
+            print(f"ERROR: Error during disconnect: {e}")
+        
+        self.socket = None
+        return False
             
     def send_command(self, command):
         """Send command to robot and receive response"""
@@ -61,6 +77,30 @@ class RobotController:
                 
         except Exception as e:
             print(f"ERROR: Error sending command: {e}")
+            return None
+    
+    def get_end_pose(self):
+        """
+        Get current end effector pose
+        Returns: List of [x, y, z, rx, ry, rz] where:
+            x,y,z: Position in meters
+            rx,ry,rz: Orientation in radians
+            Returns None if failed
+        """
+        command = {
+            "command": "get_current_arm_state"
+        }
+        response = self.send_command(json.dumps(command))
+        
+        if response and "arm_state" in response:
+            pose_units = response["arm_state"]["pose"]
+            # Convert position from protocol units (0.001mm) to meters
+            pose = [pos/1000000.0 for pos in pose_units[:3]]
+            # Convert orientation from protocol units (0.001rad) to radians
+            pose.extend([angle/1000.0 for angle in pose_units[3:]])
+            return pose
+        else:
+            print("ERROR: Failed to get end effector pose")
             return None
 
     def get_expand_position(self):
@@ -307,7 +347,18 @@ class RobotController:
         self.move_joints(self.home_joint1_6, speed=self.speed_upbound)
 # %%
 if __name__ == "__main__":
+    import numpy as np
     robot = RobotController()
     robot.connect()
     joints_angles = robot.get_joint_angles()
+    deg2rad = np.pi/180
+    joints_rad = np.array(joints_angles) * deg2rad  # Convert to numpy array before multiplying
+    current_end_pose = robot.get_end_pose()
+    from rm_65_model import RM65
+    model = RM65()
+    current_end_pose_model = model.fkine(joints_rad)
+    # Convert SE3 object to list of position and orientation
+    current_end_pose_model_list = current_end_pose_model.t.tolist() + current_end_pose_model.rpy().tolist()
     print(f"Joints angles: {joints_angles}")
+    print(f"Current end pose: {current_end_pose}")
+    print(f"Current end pose model: {current_end_pose_model_list}")
