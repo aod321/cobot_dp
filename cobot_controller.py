@@ -78,6 +78,18 @@ class RobotController:
         except Exception as e:
             print(f"ERROR: Error sending command: {e}")
             return None
+
+    def calc_end_pose(self):
+        """
+        This function exists because the get_current_arm_state interface provided by the robot manufacturer
+        is very unstable and frequently returns errors.
+        Calculate end effector pose from current joint angles
+        """
+        deg2rad = np.pi/180
+        current_joint_angles = self.get_joint_angles()  
+        current_joints_rad = np.array(current_joint_angles) * deg2rad
+        T0 = self.rm_65_ik_model.fkine(current_joints_rad)
+        return T0.t.tolist() + T0.rpy().tolist()
     
     def get_end_pose(self):
         """

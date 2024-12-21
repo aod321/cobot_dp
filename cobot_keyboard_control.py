@@ -1,80 +1,108 @@
+import multiprocessing as mp
+from multiprocessing import Queue
+import cv2
+import time
+from dataclasses import dataclass
+from typing import Tuple, Optional
+import numpy as np
 from rm_65_model import RM65
 from cobot_controller import RobotController
-import numpy as np
 from spatialmath import SE3
-import cv2
-import roboticstoolbox as rtb
-from interpolation_controller import InterpolationController
-from multiprocessing.managers import SharedMemoryManager
-from precise_sleep import precise_sleep,precise_wait
-import time
+
+@dataclass
+class MoveCommand:
+    direction: str  # 'x', 'y', 'z'
+    value: float
+    
+class KeyboardController(mp.Process):
+    def __init__(self, command_queue: Queue):
+        super().__init__()
+        self.command_queue = command_queue
+        self.step_size = 0.01  # 每次移动的步长(米)
+        
+    def run(self):
+        print("键盘控制已启动")
+        print("使用以下按键控制:")
+        print("X轴: A/D")
+        print("Y轴: W/S")
+        print("Z轴: Q/E")
+        print("按ESC退出")
+        
+        # 创建一个小窗口来接收键盘输入
+        cv2.namedWindow('Robot Control', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Robot Control', 300, 100)
+        
+        while True:
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord('a'):
+                self.command_queue.put(MoveCommand('x', -self.step_size))
+            elif key == ord('d'):
+                self.command_queue.put(MoveCommand('x', self.step_size))
+            elif key == ord('w'):
+                self.command_queue.put(MoveCommand('y', self.step_size))
+            elif key == ord('s'):
+                self.command_queue.put(MoveCommand('y', -self.step_size))
+            elif key == ord('q'):
+                self.command_queue.put(MoveCommand('z', self.step_size))
+            elif key == ord('e'):
+                self.command_queue.put(MoveCommand('z', -self.step_size))
+            elif key == 27:  # ESC键
+                break
+                
+        cv2.destroyAllWindows()
+
+class RobotControlProcess(mp.Process):
+    def __init__(self, command_queue: Queue):
+        super().__init__()
+        self.command_queue = command_queue
+        self.cobot_controller = RobotController()
+        self.rm_65_ik_model = RM65()
+        self.cobot_controller.connect()
+        self.cobot_controller.speed_upbound = 50
+        # 获取初始位姿
+        self.current_pose = self.cobot_controller.calc_end_pose()
+        
+    def moveL(self, target_pose, target_pose_as_next_current_pose=False):
+        self.cobot_controller.moveL(target_pose, speed=30)
+        if target_pose_as_next_current_pose:
+            self.current_pose = target_pose
+        else:
+            self.current_pose = self.cobot_controller.calc_end_pose()
+        
+    def run(self):
+        print("机械臂控制已启动")
+        
+        while True:
+            try:
+                command = self.command_queue.get_nowait()
+                new_pose = self.current_pose.copy()
+                
+                if command.direction == 'x':
+                    new_pose[0] += command.value
+                elif command.direction == 'y':
+                    new_pose[1] += command.value
+                elif command.direction == 'z':
+                    new_pose[2] += command.value
+                    
+                self.moveL(new_pose)
+                
+            except Exception:
+                time.sleep(0.01)  # 没有新命令时短暂休眠
 
 def main():
-    print("键盘控制说明：")
-    print("W/S: 前进/后退")
-    print("A/D: 左移/右移")
-    print("Q/E: 上升/下降")
-    print("ESC: 退出程序")
-    deg2rad = np.pi/180
-    # 初始化 SharedMemoryManager 和 InterpolationController
-    with SharedMemoryManager() as shm_manager:
-        with InterpolationController(
-            shm_manager=shm_manager,
-            robot_ip="192.168.40.102",
-            frequency=100,
-            verbose=False
-        ) as controller:
-            # 创建窗口用于接收键盘输入
-            cv2.namedWindow('Robot Control', cv2.WINDOW_NORMAL)
-            cv2.resizeWindow('Robot Control', 300, 100)
-            current_pose = controller.get_current_pose()
-            t_start = time.monotonic()
-            iter_idx = 0
-            frequency = 100
-            dt = 1/frequency
-            command_latency = 0.01
-            try:
-                while True:
-                    # calculate timing
-                    t_cycle_end = t_start + (iter_idx + 1) * dt
-                    t_sample = t_cycle_end - command_latency
-                    t_command_target = t_cycle_end + dt
-
-                    # 等待键盘输入
-                    key = cv2.waitKey(100) & 0xFF
-                    
-                    if key == 27:  # ESC键
-                        break
-                    elif key in [ord(k) for k in 'wsadqe']:
-                        # 定义移动步长(米)和旋转步长(弧度)
-                        step = 0.01
-                        current_pose = controller.get_current_pose()
-                        target_pose = current_pose.copy()
-                        
-                        # 根据按键更新目标位姿
-                        if key == ord('w'):  # 前进
-                            target_pose[1] += step
-                        elif key == ord('s'):  # 后退
-                            target_pose[1] -= step
-                        elif key == ord('a'):  # 左移
-                            target_pose[0] -= step
-                        elif key == ord('d'):  # 右移
-                            target_pose[0] += step
-                        elif key == ord('q'):  # 上升
-                            target_pose[2] += step
-                        elif key == ord('e'):  # 下降
-                            target_pose[2] -= step
-                            
-                        precise_wait(t_sample)
-                        controller.schedule_waypoint(
-                            pose=target_pose,
-                            target_time=t_command_target-time.monotonic()+time.time()
-                        )
-                        
-            except KeyboardInterrupt:
-                print("\n程序已终止")
-            finally:
-                cv2.destroyAllWindows()
-
+    command_queue = Queue()
+    
+    # 创建并启动控制进程
+    keyboard_controller = KeyboardController(command_queue)
+    robot_controller = RobotControlProcess(command_queue)
+    
+    keyboard_controller.start()
+    robot_controller.start()
+    
+    # 等待进程结束
+    keyboard_controller.join()
+    robot_controller.terminate()
+    
 if __name__ == "__main__":
     main()
