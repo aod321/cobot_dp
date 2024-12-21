@@ -5,6 +5,7 @@ import time
 import select
 from gripper_controller import GripperController
 from rm_65_model import RM65
+import numpy as np
 
 class RobotController:
     def __init__(self, ip="192.168.40.102", port=8080,
@@ -88,7 +89,7 @@ class RobotController:
         deg2rad = np.pi/180
         current_joint_angles = self.get_joint_angles()  
         current_joints_rad = np.array(current_joint_angles) * deg2rad
-        T0 = self.rm_65_ik_model.fkine(current_joints_rad)
+        T0 = self.ik_model.fkine(current_joints_rad)
         return T0.t.tolist() + T0.rpy().tolist()
     
     def get_end_pose(self):

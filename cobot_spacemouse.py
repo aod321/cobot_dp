@@ -76,19 +76,18 @@ class RobotControlProcess(mp.Process):
         print("机械臂控制已启动")
         
         while True:
-            print(f"NewPose: {self.current_pose}")
             try:
                 command = self.command_queue.get_nowait()
                 new_pose = self.current_pose.copy()
                 
                 if command.direction == 'x':
-                    new_pose[1] += command.value
-                elif command.direction == 'y':
                     new_pose[0] += command.value
+                elif command.direction == 'y':
+                    new_pose[1] -= command.value
                 elif command.direction == 'z':
                     new_pose[2] += command.value
-                    
-                self.moveL(new_pose, target_pose_as_next_current_pose=True)
+                
+                self.moveL(new_pose)
                 
             except Exception:
                 time.sleep(0.01)  # 没有新命令时短暂休眠
