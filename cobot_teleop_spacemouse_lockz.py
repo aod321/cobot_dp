@@ -316,11 +316,10 @@ class SpaceMouseController(mp.Process):
                 
                 threshold = 0.00001
                 if any(abs(v) > threshold for v in pose_delta):
-                    target_time = current_time + self.control_period
+                    target_time = time.time() + self.control_period
                     command = {
-                        'cmd': Command.SERVOL.value,
+                        'cmd': Command.SCHEDULE_WAYPOINT.value,
                         'target_pose': pose_delta,
-                        'duration': self.control_period,
                         'target_time': target_time
                     }
                     self.command_queue.put(command)
@@ -346,66 +345,72 @@ class SpaceMouseController(mp.Process):
 class RobotControlProcess(mp.Process):
     def __init__(self, command_queue: Queue, direct_command_queue: Queue):
         super().__init__()
-        self.command_queue = command_queue # 用于位置/姿态控制
-        self.direct_command_queue = direct_command_queue # 用于clear和gripper控制
-        self.current_pose = None
-        self.current_joints = None
-        self.current_joints_rad = None
-        self.control_period = 0.01  # 控制周期10ms
-        self.command_buffer = []  # 存储带时间戳的命令
+        self.command_queue = command_queue
+        self.direct_command_queue = direct_command_queue
+        self.control_period = 0.01  # 10ms control period
         self.max_pos_speed = 0.25  # m/s
         self.max_rot_speed = 0.16  # rad/s
-        self.pose_interp = None
+        # 新增参数
+        self.lookahead_time = 0.1
+        self.gain = 300
 
     def run(self):
         self.cobot_controller = RobotController()
         self.rm_65_ik_model = RM65()
         self.cobot_controller.connect()
         self.cobot_controller.speed_upbound = 50
-        self.update_current_pose()
         
-        print("机械臂控制已启动")
-        
-        next_cycle_time = time.monotonic()
+        # 初始化插值器
         curr_t = time.monotonic()
-        last_waypoint_time = curr_t
+        curr_pose = self.cobot_controller.calc_end_pose()
         self.pose_interp = PoseTrajectoryInterpolator(
             times=[curr_t],
-            poses=[self.current_pose]
+            poses=[curr_pose]
         )
+        last_waypoint_time = curr_t
         
+        next_cycle_time = time.monotonic()
         while True:
-            current_time = time.monotonic()
+            # 开始控制周期
+            t_start = time.monotonic()
             
-            # 等待直到下一个控制周期
-            precise_wait(next_cycle_time)
-            next_cycle_time = current_time + self.control_period
+            # 1. 首先发送当前插值位置给机器人
+            t_now = time.monotonic()
+            pose_command = self.pose_interp(t_now)
+            self.cobot_controller.movep_canfd(
+                pose_command.tolist(), 
+                follow=False
+            )
             
-            # 处理直接命令(clear和gripper)
+            # 2. 更新机器人状态
+            self.current_pose = pose_command
+            
+            # 3. 处理直接命令(clear和gripper)
             try:
                 while True:
                     command = self.direct_command_queue.get_nowait()
                     if command['cmd'] == Command.CLEAR.value:
                         self.cobot_controller.clear_error()
                         self.cobot_controller.resume()
-                        self.update_current_pose()
                     elif command['cmd'] == Command.GRIPPER.value:
                         if command['value'] == 1:
                             self.cobot_controller.gripper.open()
-                        elif command['value'] == 0:
+                        else:
                             self.cobot_controller.gripper.close()
             except:
                 pass
-            
-            # 获取所有可用的新位置/姿态命令并按时间戳排序
+
+            # 4. 处理位置/姿态命令
             try:
                 while True:
                     command = self.command_queue.get_nowait()
                     if command['cmd'] == Command.SERVOL.value:
                         target_pose = self.current_pose + np.array(command['target_pose'])
                         duration = float(command['duration'])
-                        curr_time = current_time + self.control_period
+                        curr_time = t_now + self.control_period
                         t_insert = curr_time + duration
+                        
+                        # 使用drive_to_waypoint进行轨迹插值
                         self.pose_interp = self.pose_interp.drive_to_waypoint(
                             pose=target_pose,
                             time=t_insert,
@@ -414,20 +419,29 @@ class RobotControlProcess(mp.Process):
                             max_rot_speed=self.max_rot_speed
                         )
                         last_waypoint_time = t_insert
+                    elif command['cmd'] == Command.SCHEDULE_WAYPOINT.value:
+                        target_pose = command['target_pose']
+                        target_time = float(command['target_time'])
+                        # 转换为monotonic时间
+                        target_time = time.monotonic() - time.time() + target_time
+                        curr_time = t_now + self.control_period
+                        
+                        # 使用schedule_waypoint进行轨迹规划
+                        self.pose_interp = self.pose_interp.schedule_waypoint(
+                            pose=target_pose,
+                            time=target_time,
+                            max_pos_speed=self.max_pos_speed,
+                            max_rot_speed=self.max_rot_speed,
+                            curr_time=curr_time,
+                            last_waypoint_time=last_waypoint_time
+                        )
+                        last_waypoint_time = target_time
             except:
                 pass
 
-            # 获取当前时刻的插值位姿并发送给机器人
-            t_now = time.monotonic()
-            pose_command = self.pose_interp(t_now)
-            self.cobot_controller.movep_canfd(pose_command.tolist(), follow=False)
-            self.current_pose = pose_command
-
-    def update_current_pose(self):
-        deg2rad = np.pi/180
-        self.current_pose = self.cobot_controller.calc_end_pose()
-        self.current_joints = self.cobot_controller.get_joint_angles()
-        self.current_joints_rad = np.array(self.current_joints) * deg2rad
+            # 5. 等待直到下一个控制周期
+            precise_wait(next_cycle_time)
+            next_cycle_time = t_start + self.control_period
 
 def main():
     command_queue = Queue()
