@@ -8,6 +8,21 @@ from rm_65_model import RM65
 import numpy as np
 
 class RobotController:
+    # Pre-formatted common commands
+    COMMANDS = {
+        'get_current_arm_state': json.dumps({"command": "get_current_arm_state"}),
+        'get_joint_degree': json.dumps({"command": "get_joint_degree"}),
+        'expand_get_state': json.dumps({"command": "expand_get_state"}),
+        'set_arm_stop': json.dumps({"command": "set_arm_stop"}),
+        'clear_system_err': json.dumps({"command": "clear_system_err"}),
+        'set_arm_slow_stop': json.dumps({"command": "set_arm_slow_stop"}),
+        'set_arm_pause': json.dumps({"command": "set_arm_pause"}),
+        'set_arm_continue': json.dumps({"command": "set_arm_continue"}),
+        'set_delete_current_trajectory': json.dumps({"command": "set_delete_current_trajectory"}),
+        'set_arm_delete_trajectory': json.dumps({"command": "set_arm_delete_trajectory"}),
+        'get_controller_state': json.dumps({"command": "get_controller_state"})
+    }
+
     def __init__(self, ip="192.168.40.102", port=8080,
                  gripper_ip="192.168.40.102", gripper_port=8000,
                  speed_upbound=5,
@@ -37,8 +52,7 @@ class RobotController:
         """Disconnect safely from robot"""
         try:
             # First stop any ongoing movement
-            stop_command = {"command": "set_arm_stop"}
-            self.send_command(json.dumps(stop_command))
+            self.send_command(self.COMMANDS['set_arm_stop'])
             
             # Close socket if it exists
             if self.socket:
@@ -102,10 +116,7 @@ class RobotController:
             rx,ry,rz: Orientation in radians
             Returns None if failed
         """
-        command = {
-            "command": "get_current_arm_state"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['get_current_arm_state'])
         
         if response and "arm_state" in response:
             pose_units = response["arm_state"]["pose"]
@@ -120,10 +131,7 @@ class RobotController:
 
     def get_expand_position(self):
         """Get current expand axis position in degrees"""
-        command = {
-            "command": "expand_get_state"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['expand_get_state'])
         if response and "state" in response:
             if response.get('pos') != 'unknown':
                 pos_deg = response.get('pos') / 1000.0  # Convert to degrees
@@ -139,12 +147,9 @@ class RobotController:
         Get current angles of joints 1-6 (not including expand axis)
         Returns: List of 6 joint angles in degrees or None if failed
         """
-        command = {
-            "command": "get_joint_degree"
-        }
         response = None
         while response is None or response.get('state', '') != 'joint_degree': # retry
-            response = self.send_command(json.dumps(command))
+            response = self.send_command(self.COMMANDS['get_joint_degree'])
         if response and "state" in response:
             # Convert from protocol units (0.001 degrees) to degrees
             joint_angles = [angle/1000.0 for angle in response["joint"]]
@@ -177,7 +182,7 @@ class RobotController:
             "speed": speed
         }
         
-        return self._execute_expand_movement(expand_command)
+        return self._execute_expand_movement(json.dumps(expand_command))
     
     def moveL(self, target_pose, speed=5, in_trajectory=False):
         """
@@ -338,10 +343,7 @@ class RobotController:
         Returns:
             bool: True if command successful, False otherwise
         """
-        command = {
-            "command": "set_arm_stop"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['set_arm_stop'])
         if response and response.get("arm_stop"):
             print("INFO: Emergency stop executed")
             return True
@@ -354,10 +356,7 @@ class RobotController:
         Returns:
             bool: True if successful, False otherwise
         """
-        command = {
-            "command": "clear_system_err"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['clear_system_err'])
         if response and response.get("clear_state"):
             print("INFO: System error cleared")
             return True
@@ -370,10 +369,7 @@ class RobotController:
         Returns:
             bool: True if command successful, False otherwise
         """
-        command = {
-            "command": "set_arm_slow_stop"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['set_arm_slow_stop'])
         if response and response.get("arm_slow_stop"):
             print("INFO: Slow stop executed")
             return True
@@ -386,10 +382,7 @@ class RobotController:
         Returns:
             bool: True if command successful, False otherwise
         """
-        command = {
-            "command": "set_arm_pause"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['set_arm_pause'])
         if response and response.get("arm_pause"):
             print("INFO: Movement paused")
             return True
@@ -402,10 +395,7 @@ class RobotController:
         Returns:
             bool: True if command successful, False otherwise
         """
-        command = {
-            "command": "set_arm_continue"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['set_arm_continue'])
         if response and response.get("arm_continue"):
             print("INFO: Movement resumed")
             return True
@@ -418,10 +408,7 @@ class RobotController:
         Returns:
             bool: True if command successful, False otherwise
         """
-        command = {
-            "command": "set_delete_current_trajectory"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['set_delete_current_trajectory'])
         if response and response.get("delete_current_trajectory"):
             print("INFO: Current trajectory cleared")
             return True
@@ -434,10 +421,7 @@ class RobotController:
         Returns:
             bool: True if command successful, False otherwise
         """
-        command = {
-            "command": "set_arm_delete_trajectory"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['set_arm_delete_trajectory'])
         if response and response.get("arm_delete_trajectory"):
             print("INFO: All trajectories cleared")
             return True
@@ -475,10 +459,7 @@ class RobotController:
         Returns:
             dict: System state info if successful, None if failed
         """
-        command = {
-            "command": "get_controller_state"
-        }
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(self.COMMANDS['get_controller_state'])
         
         if response and "state" in response:
             # Convert from protocol units (0.001) to actual values
@@ -608,7 +589,7 @@ class RobotController:
         Returns:
             bool: True if movement successful, False otherwise
         """
-        response = self.send_command(json.dumps(command))
+        response = self.send_command(command)
         if not response or not response.get("set_pos_state"):
             print("ERROR: Failed to send expand axis command")
             return False
