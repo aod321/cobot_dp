@@ -53,7 +53,7 @@ class RobotController:
         self.socket = None
         return False
             
-    def send_command(self, command):
+    def send_command(self, command, wait_response=True):
         """Send command to robot and receive response"""
         if not self.socket:
             print("ERROR: Not connected to robot")
@@ -64,17 +64,19 @@ class RobotController:
             command = command + "\r\n"
             self.socket.send(command.encode())
             
-            # Use select to wait for response with timeout
-            ready = select.select([self.socket], [], [], 2.0)
-            if ready[0]:
-                response = self.socket.recv(1024).decode()
-                # Clear any remaining data in buffer
-                while select.select([self.socket], [], [], 0.1)[0]:
-                    self.socket.recv(1024)
-                return json.loads(response)
-            else:
-                print("ERROR: Timeout waiting for response")
-                return None
+            if wait_response:
+                # Use select to wait for response with timeout
+                ready = select.select([self.socket], [], [], 2.0)
+                if ready[0]:
+                    response = self.socket.recv(1024).decode()
+                    # Clear any remaining data in buffer
+                    while select.select([self.socket], [], [], 0.1)[0]:
+                        self.socket.recv(1024)
+                    return json.loads(response)
+                else:
+                    print("ERROR: Timeout waiting for response")
+                    return None
+            return True
                 
         except Exception as e:
             print(f"ERROR: Error sending command: {e}")
@@ -218,6 +220,284 @@ class RobotController:
             
         print("ERROR: Failed to send movement command") 
         return False
+    
+    def movej_canfd(self, joint_angles, follow=False, expand_angle=None):
+        """
+        Joint angle servo without trajectory planning
+        Args:
+            joint_angles: List of 6 angles in degrees for joints 1-6
+            follow: True for high following mode (requires cycle time ≤10ms)
+                False for low following mode
+            expand_angle: Optional expand axis angle in degrees
+        Returns:
+            bool: True if command sent successfully, False otherwise
+        Notes:
+            - Requires stable control cycle: 20ms for WiFi/network, 10ms for USB/RS485/high-speed port, 2ms for I series
+            - Joint angle change between frames must be <10° and speed <180°/s
+            - No trajectory planning, direct joint control
+        """
+        if not isinstance(joint_angles, list) or len(joint_angles) != 6:
+            print("ERROR: joint_angles must be a list of 6 angles")
+            return False
+            
+        # Get current angles and check angle changes
+        current_angles = self.get_joint_angles()
+        if current_angles:
+            for curr, target in zip(current_angles, joint_angles):
+                if abs(target - curr) > 10:
+                    print("ERROR: Joint angle change too large (>10°)")
+                    return False
+        
+        # Convert angles to protocol units (0.001 degrees)
+        joint_units = [int(angle * 1000) for angle in joint_angles]
+        
+        command = {
+            "command": "movej_canfd",
+            "joint": joint_units,
+            "follow": follow
+        }
+        
+        # Add expand axis if provided
+        if expand_angle is not None:
+            command["expand"] = int(expand_angle * 1000)
+            
+        response = self.send_command(json.dumps(command), wait_response=False)
+        if response:
+            print(f"INFO: Successfully sent joint servo command")
+            return True
+                
+        print("ERROR: Failed to send joint servo command") 
+        return False
+
+    def movep_canfd(self, target_pose, follow=False, use_quaternion=False):
+        """
+        Pose servo without trajectory planning
+        Args:
+            target_pose: Two format options:
+                1. List of [x, y, z, rx, ry, rz] where:
+                    x,y,z: Target position in meters
+                    rx,ry,rz: Target orientation in radians
+                2. List of [x, y, z, qw, qx, qy, qz] where:
+                    x,y,z: Target position in meters
+                    qw,qx,qy,qz: Orientation in quaternion
+            follow: True for high following mode (requires cycle time ≤10ms)
+                    False for low following mode
+            use_quaternion: True to use quaternion format, False to use euler angles
+        Returns:
+            bool: True if command sent successfully, False otherwise
+        Notes:
+            - Requires stable control cycle: 
+            > 20ms for WiFi/network
+            > 10ms for USB/RS485/high-speed port
+            > 2ms for I series
+            - No trajectory planning, direct inverse kinematics
+        """
+        if use_quaternion and len(target_pose) != 7:
+            print("ERROR: Quaternion pose must be [x,y,z,qw,qx,qy,qz]")
+            return False
+        elif not use_quaternion and len(target_pose) != 6:
+            print("ERROR: Euler pose must be [x,y,z,rx,ry,rz]")
+            return False
+
+        pose_units = []
+        # Position conversion from meters to millimeters (*1000) then to protocol units (*1000)
+        for i in range(3):
+            pose_units.append(int(target_pose[i] * 1000000))
+            
+        # Orientation conversion depends on format
+        if use_quaternion:
+            # Convert quaternion to protocol units (*1000000)
+            for i in range(3,7):
+                pose_units.append(int(target_pose[i] * 1000000))
+            command = {
+                "command": "movep_canfd",
+                "pose_quat": pose_units,
+                "follow": follow
+            }
+        else:
+            # Convert euler angles to protocol units (*1000)
+            for i in range(3,6):
+                pose_units.append(int(target_pose[i] * 1000))
+            command = {
+                "command": "movep_canfd",
+                "pose": pose_units,
+                "follow": follow
+            }
+            
+        response = self.send_command(json.dumps(command), wait_response=False)
+        if response:
+            return True
+                
+        print("ERROR: Failed to send pose servo command") 
+        return False
+    
+    def emergency_stop(self):
+        """
+        Stop robot immediately with maximum deceleration.
+        Trajectory cannot be resumed after emergency stop.
+        Returns:
+            bool: True if command successful, False otherwise
+        """
+        command = {
+            "command": "set_arm_stop"
+        }
+        response = self.send_command(json.dumps(command))
+        if response and response.get("arm_stop"):
+            print("INFO: Emergency stop executed")
+            return True
+        print("ERROR: Failed to execute emergency stop")
+        return False
+
+    def clear_error(self):
+        """
+        Clear system error state to allow new commands
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        command = {
+            "command": "clear_system_err"
+        }
+        response = self.send_command(json.dumps(command))
+        if response and response.get("clear_state"):
+            print("INFO: System error cleared")
+            return True
+        print("ERROR: Failed to clear system error")
+        return False
+
+    def slow_stop(self):
+        """
+        Stop robot smoothly on current trajectory.
+        Returns:
+            bool: True if command successful, False otherwise
+        """
+        command = {
+            "command": "set_arm_slow_stop"
+        }
+        response = self.send_command(json.dumps(command))
+        if response and response.get("arm_slow_stop"):
+            print("INFO: Slow stop executed")
+            return True
+        print("ERROR: Failed to execute slow stop")
+        return False
+
+    def pause(self):
+        """
+        Pause robot movement. Movement can be resumed later.
+        Returns:
+            bool: True if command successful, False otherwise
+        """
+        command = {
+            "command": "set_arm_pause"
+        }
+        response = self.send_command(json.dumps(command))
+        if response and response.get("arm_pause"):
+            print("INFO: Movement paused")
+            return True
+        print("ERROR: Failed to pause movement")
+        return False
+
+    def resume(self):
+        """
+        Resume paused movement.
+        Returns:
+            bool: True if command successful, False otherwise
+        """
+        command = {
+            "command": "set_arm_continue"
+        }
+        response = self.send_command(json.dumps(command))
+        if response and response.get("arm_continue"):
+            print("INFO: Movement resumed")
+            return True
+        print("ERROR: Failed to resume movement")
+        return False
+
+    def clear_trajectory(self):
+        """
+        Clear current trajectory. Must be called in paused state.
+        Returns:
+            bool: True if command successful, False otherwise
+        """
+        command = {
+            "command": "set_delete_current_trajectory"
+        }
+        response = self.send_command(json.dumps(command))
+        if response and response.get("delete_current_trajectory"):
+            print("INFO: Current trajectory cleared")
+            return True
+        print("ERROR: Failed to clear trajectory")
+        return False
+
+    def clear_all_trajectories(self):
+        """
+        Clear all trajectories. Must be called in paused state.
+        Returns:
+            bool: True if command successful, False otherwise
+        """
+        command = {
+            "command": "set_arm_delete_trajectory"
+        }
+        response = self.send_command(json.dumps(command))
+        if response and response.get("arm_delete_trajectory"):
+            print("INFO: All trajectories cleared")
+            return True
+        print("ERROR: Failed to clear trajectories")
+        return False
+    
+    def _parse_error_code(self, err_code):
+        """Parse system error code to human readable text"""
+        ERROR_CODES = {
+            0x0000: "正常",
+            0x1001: "关节通信异常",
+            0x1002: "目标角度超过限位",
+            0x1003: "该处不可达，为奇异点", 
+            0x1004: "实时内核通信错误",
+            0x1007: "关节超速",
+            0x1008: "末端接口板无法连接",
+            0x1009: "超速度限制",
+            0x100A: "超加速度限制",
+            0x100B: "关节抱闸未打开",
+            0x100C: "拖动示教时超速",
+            0x100D: "机械臂发生碰撞",
+            0x100E: "无该工作坐标系",
+            0x100F: "无该工具坐标系",
+            0x1010: "关节发生掉使能错误",
+            0x1011: "圆弧规划错误",
+            0x1012: "自碰撞错误",
+            0x1013: "碰撞到电子围栏错误",
+            0x1014: "超关节软限位错误"
+        }
+        return ERROR_CODES.get(err_code, f"未知错误码: {hex(err_code)}")
+
+    def get_system_state(self):
+        """
+        Get current system state including voltage, current, temperature and error flags
+        Returns:
+            dict: System state info if successful, None if failed
+        """
+        command = {
+            "command": "get_controller_state"
+        }
+        response = self.send_command(json.dumps(command))
+        
+        if response and "state" in response:
+            # Convert from protocol units (0.001) to actual values
+            state = {
+                'voltage': response.get('voltage', 0) / 1000.0,  # V
+                'current': response.get('current', 0) / 1000.0,  # A
+                'temperature': response.get('temperature', 0) / 1000.0,  # °C
+                'err_flag': response.get('err_flag', 0),  # Error code
+                'err_msg': self._parse_error_code(response.get('err_flag', 0))
+            }
+            print(f"INFO: System state:")
+            print(f"- Voltage: {state['voltage']}V")
+            print(f"- Current: {state['current']}A")
+            print(f"- Temperature: {state['temperature']}°C")
+            print(f"- Error: {state['err_msg']} ({hex(state['err_flag'])})")
+            return state
+        
+        print("ERROR: Failed to get system state")
+        return None
 
     def move_joints(self, joint_angles, speed=5):
         """
